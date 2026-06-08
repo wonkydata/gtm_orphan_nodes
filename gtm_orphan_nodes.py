@@ -6,8 +6,24 @@
 import json
 import pandas as pd
 
-
 def find_hermit_nodes(gtm_json_path):
+
+    # Helper function to recursively find variable references within any dictionary or list structure
+    def _recursively_find_references(obj, variable_map, used_variables, variable_self_id=None):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, str):
+                    # Check for variable references in string values
+                    for var_id, var_name in variable_map.items():
+                        if (variable_self_id is None or variable_self_id != var_id) and f"{{{{{var_name}}}}}" in value:
+                            used_variables.add(var_id)
+                elif isinstance(value, (dict, list)):
+                    _recursively_find_references(value, variable_map, used_variables, variable_self_id)
+        elif isinstance(obj, list):
+            for item in obj:
+                _recursively_find_references(item, variable_map, used_variables, variable_self_id)
+
+
     # Load the GTM export file
     with open(gtm_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -37,33 +53,26 @@ def find_hermit_nodes(gtm_json_path):
         for trigger_id in tag.get("blockingTriggerId", []):
             used_triggers.add(trigger_id)
 
-        # Check for variables used inside tag parameters
-        for param in tag.get("parameter", []):
-            val = str(param.get("value", ""))
-            # GTM variables are referenced as {{Variable Name}}
-            for var_id, var_name in variable_map.items():
-                if f"{{{{{var_name}}}}}" in val: # Corrected f-string
-                    used_variables.add(var_id)
+        # Recursively check for variables used inside tag parameters
+        _recursively_find_references(tag.get("parameter", []), variable_map, used_variables)
 
     # --- Step 2: Analyze Triggers ---
     for trigger in triggers:
-        # Check for variables used in trigger filters (conditions)
-        for filter_cond in trigger.get("filter", []):
-            for param in filter_cond.get("parameter", []):
-                val = str(param.get("value", ""))
-                for var_id, var_name in variable_map.items():
-                    if f"{{{{{var_name}}}}}" in val: # Corrected f-string
-                        used_variables.add(var_id)
+        # Recursively check for variables used in trigger filters (conditions)
+        _recursively_find_references(trigger.get("filter", []), variable_map, used_variables)
+
 
     # --- Step 3: Analyze Variables ---
     # Variables can reference other variables
     for variable in variables:
-        for param in variable.get("parameter", []):
-            val = str(param.get("value", ""))
-            for var_id, var_name in variable_map.items():
-                # Prevent a variable from marking itself as 'used' if it mentions its own name
-                if variable["variableId"] != var_id and f"{{{{{var_name}}}}}" in val: # Corrected f-string
-                    used_variables.add(var_id)
+        # Recursively check for variables used within this variable's parameters
+        # Pass the current variable's ID to prevent it from marking itself as used
+        _recursively_find_references(
+            variable.get("parameter", []),
+            variable_map,
+            used_variables,
+            variable_self_id=variable["variableId"]
+        )
 
     # --- Step 4: Identify the Hermits ---
     # 1. Hermit Triggers (Not used by any tag)
@@ -104,8 +113,10 @@ def find_hermit_nodes(gtm_json_path):
     for v in hermit_variables:
         print(f"  - {v}")
 
+    return hermit_tags, hermit_triggers, hermit_variables
 
-# Run the script (Replace "GTM-your-file.json" with your actual JSON export file path)
+
+# Run the script (Replace with your actual JSON export file path)
 if __name__ == "__main__":
-    # Example: find_hermit_nodes('GTM-your-file.json')
-    find_hermit_nodes("GTM-your-file.json")
+    # Example: find_hermit_nodes('GTM-TQCVD6D_workspace390.json')
+    hermit_tags, hermit_triggers, hermit_variables = find_hermit_nodes("GTM-TQCVD6D_workspace390.json")
